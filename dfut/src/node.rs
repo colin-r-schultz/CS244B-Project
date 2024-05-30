@@ -90,7 +90,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
     fn spawn<T: DFutValue>(
         &self,
         call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<T>, &'static str> {
+    ) -> Result<DFut<C, T>, &'static str> {
         let conn = self.connections.values().nth(0).unwrap();
         conn.spawn(call)
     }
@@ -115,7 +115,7 @@ static NODE: OnceLock<Box<dyn Sync + Send + Any>> = OnceLock::new();
 
 pub fn spawn<T: DFutValue, C: DFutTrait<CallType = C, Output = Value>>(
     call: impl DFutTrait<CallType = C, Output = T>,
-) -> Result<DFut<T>, &'static str> {
+) -> Result<DFut<C, T>, &'static str> {
     NODE.get()
         .expect("Not in context")
         .downcast_ref::<Node<C>>()

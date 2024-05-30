@@ -4,8 +4,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::RefCell;
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
+use std::pin::Pin;
 
 #[derive(Serialize, Deserialize)]
 pub struct DFutData {
@@ -17,27 +18,29 @@ pub struct DFutData {
 }
 
 #[must_use]
-pub struct DFut<T> {
+pub struct DFut<C: DFutTrait<CallType = C, Output = Value>, T> {
     data: RefCell<DFutData>,
+    node: &'static Node<C>,
     _marker: PhantomData<T>,
 }
 
-impl<T> DFut<T> {
-    pub fn new(node: NodeId, id: DFutId) -> Self {
+impl<C: DFutTrait<CallType = C, Output = Value>, T> DFut<C, T> {
+    pub fn new(node: &'static Node<C>, node_id: NodeId, id: DFutId) -> Self {
         Self {
             data: RefCell::new(DFutData {
-                node,
+                node: node_id,
                 id,
                 instance_id: InstanceId::new_v4(),
                 parent: InstanceId::nil(),
                 children: 0,
             }),
+            node,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T> Clone for DFut<T> {
+impl<C: DFutTrait<CallType = C, Output = Value>, T> Clone for DFut<C, T> {
     fn clone(&self) -> Self {
         let mut data = self.data.borrow_mut();
         data.children += 1;
@@ -55,14 +58,27 @@ impl<T> Clone for DFut<T> {
                 parent,
                 children: 0,
             }),
+            node: self.node,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T> Into<DFutData> for DFut<T> {
+impl<C: DFutTrait<CallType = C, Output = Value>, T> Into<DFutData> for DFut<C, T> {
     fn into(self) -> DFutData {
         self.data.into_inner()
+    }
+}
+
+impl<C: DFutTrait<CallType = C, Output = Value>, T: Clone + DeserializeOwned + 'static> IntoFuture
+    for DFut<C, T>
+{
+    type Output = T;
+
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output>>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.node.retrieve(self.into()))
     }
 }
 
@@ -93,8 +109,8 @@ impl<T> From<T> for MaybeFut<T> {
     }
 }
 
-impl<T> From<DFut<T>> for MaybeFut<T> {
-    fn from(value: DFut<T>) -> Self {
+impl<C: DFutTrait<CallType = C, Output = Value>, T> From<DFut<C, T>> for MaybeFut<T> {
+    fn from(value: DFut<C, T>) -> Self {
         Self::Fut(value.into())
     }
 }

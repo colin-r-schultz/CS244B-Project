@@ -48,7 +48,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Connection<C> {
     pub fn spawn<T: DFutValue>(
         &self,
         call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<T>, &'static str> {
+    ) -> Result<DFut<C, T>, &'static str> {
         if let Some(sess) = &*self.session.lock().unwrap() {
             sess.spawn(call)
         } else {
@@ -68,10 +68,8 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Connection<C> {
     }
 }
 
-enum SessionType<C: DFutTrait> {
-    Local {
-        node: &'static Node<C>,
-    },
+enum SessionType<C> {
+    Local,
     Remote {
         tasks: JoinSet<()>,
         call_channel: Sender<Command<C>>,
@@ -79,6 +77,7 @@ enum SessionType<C: DFutTrait> {
 }
 
 struct Session<C: DFutTrait> {
+    node: &'static Node<C>,
     connected_id: NodeId,
     session_type: SessionType<C>,
 }
@@ -86,8 +85,9 @@ struct Session<C: DFutTrait> {
 impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
     fn new_local(node: &'static Node<C>, connected_id: NodeId) -> Self {
         Self {
+            node,
             connected_id,
-            session_type: SessionType::Local { node },
+            session_type: SessionType::Local,
         }
     }
 
@@ -107,6 +107,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
             .unwrap()
         });
         Self {
+            node,
             connected_id,
             session_type: SessionType::Remote {
                 call_channel: sender_clone,
@@ -118,10 +119,10 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
     fn spawn<T>(
         &self,
         call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<T>, &'static str> {
+    ) -> Result<DFut<C, T>, &'static str> {
         let id = DFutId::new_v4();
         match &self.session_type {
-            SessionType::Local { node } => node.run_task(id, call.to_call_type()),
+            SessionType::Local => self.node.run_task(id, call.to_call_type()),
             SessionType::Remote { call_channel, .. } => call_channel
                 .try_send(Command::Call {
                     id,
@@ -129,7 +130,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
                 })
                 .unwrap(),
         };
-        Ok(DFut::new(self.connected_id, id))
+        Ok(DFut::new(self.node, self.connected_id, id))
     }
 
     pub fn retrieve<T: Clone + DeserializeOwned + 'static>(
@@ -137,8 +138,8 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
         data: DFutData,
     ) -> impl Future<Output = T> + Send {
         match &self.session_type {
-            SessionType::Local { node } => {
-                let pending = node.get_from_store(data);
+            SessionType::Local => {
+                let pending = self.node.get_from_store(data);
                 Box::pin(async { Arc::unwrap_or_clone(cast(pending.resolve().await).unwrap()) })
                     as Pin<Box<dyn Future<Output = T> + Send>>
             }
