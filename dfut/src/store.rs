@@ -12,7 +12,9 @@ pub struct ObjectStore {
 
 impl ObjectStore {
     pub fn new() -> Self {
-        todo!()
+        Self {
+            map: Mutex::default(),
+        }
     }
 
     pub fn put<F: Future<Output = Value> + Send + 'static>(&self, id: DFutId, task: F) {

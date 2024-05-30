@@ -1,6 +1,6 @@
 mod connection;
 mod dfut;
-mod macros;
+pub mod macros;
 mod node;
 mod protocol;
 mod store;

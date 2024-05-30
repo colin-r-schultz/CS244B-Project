@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! create_struct {
     ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty) => {
         #[derive(Serialize,Deserialize)]
@@ -26,7 +27,7 @@ macro_rules! create_struct {
                 Self::_run($($arg.resolve(node).await),*).await
             }
 
-            fn get_dfut_deps(&self) -> Vec<($crate::types::NodeId, $crate::types::DFutId)> {
+            fn get_dfut_deps(&self) -> Vec<(NodeId, DFutId)> {
                 let mut res = Vec::new();
                 $(self.$arg.add_dfut_dep(&mut res);)*
                 res
@@ -35,14 +36,16 @@ macro_rules! create_struct {
     };
 }
 
+#[macro_export]
 macro_rules! create_constructor {
     ($name:ident ($($arg:ident : $argtype:ty),*)) => {
-        fn $name ($($arg : impl Into<$crate::dfut::MaybeFut<$argtype>>),*) -> dfut_impl::structs::$name {
+        fn $name ($($arg : impl Into<$crate::macros::support::MaybeFut<$argtype>>),*) -> dfut_impl::structs::$name {
             dfut_impl::structs::$name::new($($arg.into()),*)
         }
     };
 }
 
+#[macro_export]
 macro_rules! struct_impl {
     ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty $body:block) => {
         impl dfut_impl::structs::$name {
@@ -57,12 +60,7 @@ macro_rules! dfut_procs {
         #[allow(non_camel_case_types)]
         mod dfut_impl {
             use std::sync::Arc;
-
-            use $crate::Node;
-            use $crate::dfut::{DFutTrait, MaybeFut};
-            use $crate::types::{Value};
-
-            use serde::{Serialize, Deserialize};
+            use $crate::macros::support::{DFutTrait, MaybeFut, Serialize, Deserialize, Node, Value, DFutId, NodeId,};
 
             #[derive(Serialize,Deserialize)]
             pub enum Call {
@@ -70,8 +68,8 @@ macro_rules! dfut_procs {
             }
 
             pub(super) mod structs {
-                use super::{DFutTrait, MaybeFut, Serialize, Deserialize, Node};
-                $(create_struct!{$name ($($arg : $argtype),*) $ret})*
+                use $crate::macros::support::{DFutTrait, MaybeFut, Serialize, Deserialize, Node, DFutId, NodeId,};
+                $($crate::create_struct!{$name ($($arg : $argtype),*) $ret})*
             }
 
             impl DFutTrait for Call {
@@ -84,7 +82,7 @@ macro_rules! dfut_procs {
                     }
                 }
 
-                fn get_dfut_deps(&self) -> Vec<($crate::types::NodeId, $crate::types::DFutId)> {
+                fn get_dfut_deps(&self) -> Vec<(NodeId, DFutId)> {
                     match self {
                         $(Self::$name(inner) => inner.get_dfut_deps()),*
                     }
@@ -92,18 +90,25 @@ macro_rules! dfut_procs {
             }
         }
 
-        $(create_constructor!{$name ($($arg : $argtype),*)})*
-        $(struct_impl!{$name ($($arg : $argtype),*) $ret $body})*
+        $($crate::create_constructor!{$name ($($arg : $argtype),*)})*
+        $($crate::struct_impl!{$name ($($arg : $argtype),*) $ret $body})*
 
     };
 }
 
-dfut_procs! {
-    async fn add(a: i32, b: i32) -> i32 {
-        a + b
-    }
+// dfut_procs! {
+//     async fn add(a: i32, b: i32) -> i32 {
+//         a + b
+//     }
 
-    async fn wiki_ladder(_path: Vec<String>, _target: String) -> Vec<String> {
-        vec!["a".to_owned()]
-    }
+//     async fn wiki_ladder(_path: Vec<String>, _target: String) -> Vec<String> {
+//         vec!["a".to_owned()]
+//     }
+// }
+
+pub mod support {
+    pub use crate::dfut::{DFutTrait, MaybeFut};
+    pub use crate::node::Node;
+    pub use crate::types::{DFutId, NodeId, Value};
+    pub use serde::{Deserialize, Serialize};
 }

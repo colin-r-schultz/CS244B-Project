@@ -32,24 +32,31 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
             .collect();
         Ok(Self {
             id,
-            rt: Builder::new_current_thread().enable_io().build()?,
+            rt: Builder::new_current_thread().enable_all().build()?,
             addr_map,
             connections,
             store: ObjectStore::new(),
         })
     }
 
-    pub fn start(self) {
+    pub fn start(self, main: Option<impl DFutTrait<CallType = C, Output = ()>>) {
         if let Err(_) = NODE.set(Box::new(self)) {
             panic!("Attempting to start second Node");
         }
-        NODE.get().unwrap().downcast_ref::<Self>().unwrap().run();
+        NODE.get()
+            .unwrap()
+            .downcast_ref::<Self>()
+            .unwrap()
+            .run(main);
     }
 
-    fn run(&'static self) {
+    fn run(&'static self, main: Option<impl DFutTrait<CallType = C, Output = ()>>) {
         self.connections.get(&self.id).unwrap().start_local(self);
         self.rt.block_on(async {
             let _handle = tokio::spawn(self.connect_remotes());
+            if let Some(main) = main {
+                self.spawn(main).unwrap().await;
+            }
         });
     }
 
@@ -91,7 +98,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
         &self,
         call: impl DFutTrait<CallType = C, Output = T>,
     ) -> Result<DFut<C, T>, &'static str> {
-        let conn = self.connections.values().nth(0).unwrap();
+        let conn = self.connections.get(&0).unwrap();
         conn.spawn(call)
     }
 
@@ -115,10 +122,11 @@ static NODE: OnceLock<Box<dyn Sync + Send + Any>> = OnceLock::new();
 
 pub fn spawn<T: DFutValue, C: DFutTrait<CallType = C, Output = Value>>(
     call: impl DFutTrait<CallType = C, Output = T>,
-) -> Result<DFut<C, T>, &'static str> {
+) -> DFut<C, T> {
     NODE.get()
         .expect("Not in context")
         .downcast_ref::<Node<C>>()
         .unwrap()
         .spawn(call)
+        .unwrap()
 }

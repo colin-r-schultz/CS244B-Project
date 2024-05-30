@@ -75,7 +75,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>, T: Clone + DeserializeOwned + '
 {
     type Output = T;
 
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output>>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.node.retrieve(self.into()))
