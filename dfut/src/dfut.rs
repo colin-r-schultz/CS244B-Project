@@ -1,20 +1,22 @@
-use crate::types::{DFutId, InstanceId, NodeId};
+use crate::types::{DFutId, InstanceId, NodeId, Value};
 use crate::Node;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::cell::RefCell;
+use std::future::Future;
 use std::marker::PhantomData;
 
 #[derive(Serialize, Deserialize)]
 pub struct DFutData {
-    node: NodeId,
-    id: DFutId,
-    instance_id: InstanceId,
-    parent: InstanceId,
-    children: usize,
+    pub node: NodeId,
+    pub id: DFutId,
+    pub instance_id: InstanceId,
+    pub parent: InstanceId,
+    pub children: i32,
 }
 
+#[must_use]
 pub struct DFut<T> {
     data: RefCell<DFutData>,
     _marker: PhantomData<T>,
@@ -70,14 +72,14 @@ pub enum MaybeFut<T> {
     Fut(DFutData),
 }
 
-impl<T> MaybeFut<T> {
+impl<T: Clone + DeserializeOwned + 'static> MaybeFut<T> {
     pub fn add_dfut_dep(&self, deps: &mut Vec<(NodeId, DFutId)>) {
         if let Self::Fut(f) = self {
             deps.push((f.node, f.id));
         }
     }
 
-    pub async fn resolve<C: DFutTrait>(self, node: &Node<C>) -> T {
+    pub async fn resolve<C: DFutTrait<CallType = C, Output = Value>>(self, node: &Node<C>) -> T {
         match self {
             Self::Val(x) => x,
             Self::Fut(data) => node.retrieve(data).await,
@@ -101,7 +103,10 @@ pub trait DFutTrait: Sized + Serialize + DeserializeOwned + Send + 'static {
     type Output: DFutValue;
     type CallType: From<Self> + DFutTrait;
 
-    async fn run(self, node: &Node<Self::CallType>) -> Self::Output;
+    fn run(
+        self,
+        node: &'static Node<Self::CallType>,
+    ) -> impl Future<Output = Self::Output> + Send + 'static;
 
     fn to_call_type(self) -> Self::CallType {
         self.into()
@@ -110,5 +115,6 @@ pub trait DFutTrait: Sized + Serialize + DeserializeOwned + Send + 'static {
     fn get_dfut_deps(&self) -> Vec<(NodeId, DFutId)>;
 }
 
-pub trait DFutValue: Any + erased_serde::Serialize + Send {}
-impl<T> DFutValue for T where T: Any + Serialize + Send {}
+pub trait DFutValue: Any + erased_serde::Serialize + Send + Sync {}
+impl<T> DFutValue for T where T: Any + Serialize + Send + Sync {}
+erased_serde::serialize_trait_object!(DFutValue);

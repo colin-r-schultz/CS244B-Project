@@ -1,15 +1,18 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
+use serde::de::DeserializeOwned;
 use tokio::net::TcpSocket;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::connection::Connection;
 use crate::dfut::{DFut, DFutData, DFutTrait, DFutValue};
-use crate::types::{DFutId, NodeId};
+use crate::store::{ObjectStore, PendingValue};
+use crate::types::{DFutId, NodeId, Value};
 
 pub struct Node<CallType: DFutTrait> {
     id: NodeId,
@@ -17,9 +20,11 @@ pub struct Node<CallType: DFutTrait> {
 
     rt: Runtime,
     connections: HashMap<NodeId, Connection<CallType>>,
+
+    store: ObjectStore,
 }
 
-impl<C: DFutTrait> Node<C> {
+impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
     pub fn new(id: NodeId, addr_map: HashMap<NodeId, SocketAddr>) -> io::Result<Self> {
         let connections = addr_map
             .iter()
@@ -30,6 +35,7 @@ impl<C: DFutTrait> Node<C> {
             rt: Builder::new_current_thread().enable_io().build()?,
             addr_map,
             connections,
+            store: ObjectStore::new(),
         })
     }
 
@@ -89,16 +95,25 @@ impl<C: DFutTrait> Node<C> {
         conn.spawn(call)
     }
 
-    pub(crate) fn run_task(&self, id: DFutId, call: C) {}
+    pub(crate) fn run_task(&'static self, id: DFutId, call: C) {
+        self.store.put(id, call.run(self))
+    }
 
-    pub(crate) async fn retrieve<T>(&self, data: DFutData) -> T {
-        todo!()
+    pub(crate) fn get_from_store(&self, data: DFutData) -> PendingValue {
+        self.store.get(data)
+    }
+
+    pub(crate) fn retrieve<T: Clone + DeserializeOwned + 'static>(
+        &self,
+        data: DFutData,
+    ) -> impl Future<Output = T> + Send {
+        self.connections.get(&data.node).unwrap().retrieve(data)
     }
 }
 
 static NODE: OnceLock<Box<dyn Sync + Send + Any>> = OnceLock::new();
 
-pub fn spawn<T: DFutValue, C: DFutTrait>(
+pub fn spawn<T: DFutValue, C: DFutTrait<CallType = C, Output = Value>>(
     call: impl DFutTrait<CallType = C, Output = T>,
 ) -> Result<DFut<T>, &'static str> {
     NODE.get()

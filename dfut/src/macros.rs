@@ -1,5 +1,5 @@
 macro_rules! create_struct {
-    ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty $body:block) => {
+    ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty) => {
         #[derive(Serialize,Deserialize)]
         pub struct $name {
             $($arg : MaybeFut<$argtype>),*
@@ -21,11 +21,9 @@ macro_rules! create_struct {
             type Output = $ret;
             type CallType = super::Call;
 
-            async fn run(self, node: &Node<Self::CallType>) -> Self::Output {
-                async fn _run($($arg : $argtype),*) -> $ret $body
-
+            async fn run(self, node: &'static Node<Self::CallType>) -> Self::Output {
                 let Self { $($arg),* } = self;
-                _run($($arg.resolve(node).await),*).await
+                Self::_run($($arg.resolve(node).await),*).await
             }
 
             fn get_dfut_deps(&self) -> Vec<($crate::types::NodeId, $crate::types::DFutId)> {
@@ -39,8 +37,16 @@ macro_rules! create_struct {
 
 macro_rules! create_constructor {
     ($name:ident ($($arg:ident : $argtype:ty),*)) => {
-        fn $name ($($arg : impl Into<MaybeFut<$argtype>>),*) -> structs::$name {
-            structs::$name::new($($arg.into()),*)
+        fn $name ($($arg : impl Into<$crate::dfut::MaybeFut<$argtype>>),*) -> dfut_impl::structs::$name {
+            dfut_impl::structs::$name::new($($arg.into()),*)
+        }
+    };
+}
+
+macro_rules! struct_impl {
+    ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty $body:block) => {
+        impl dfut_impl::structs::$name {
+            async fn _run($($arg : $argtype),*) -> $ret $body
         }
     };
 }
@@ -50,10 +56,11 @@ macro_rules! dfut_procs {
     ($(async fn $name:ident ($($arg:ident : $argtype:ty),*) -> $ret:ty $body:block)*) => {
         #[allow(non_camel_case_types)]
         mod dfut_impl {
-            use std::boxed::Box;
+            use std::sync::Arc;
 
             use $crate::Node;
             use $crate::dfut::{DFutTrait, MaybeFut};
+            use $crate::types::{Value};
 
             use serde::{Serialize, Deserialize};
 
@@ -62,18 +69,18 @@ macro_rules! dfut_procs {
                 $($name(structs::$name)),*
             }
 
-            mod structs {
+            pub(super) mod structs {
                 use super::{DFutTrait, MaybeFut, Serialize, Deserialize, Node};
-                $(create_struct!{$name ($($arg : $argtype),*) $ret $body})*
+                $(create_struct!{$name ($($arg : $argtype),*) $ret})*
             }
 
             impl DFutTrait for Call {
-                type Output = Box<dyn erased_serde::Serialize + Send>;
+                type Output = Value;
                 type CallType = Self;
 
-                async fn run(self, node: &Node<Self::CallType>) -> Self::Output {
+                async fn run(self, node: &'static Node<Self::CallType>) -> Self::Output {
                     match self {
-                        $(Self::$name(inner) => Box::new(inner.run(node).await)),*
+                        $(Self::$name(inner) => Arc::new(inner.run(node).await)),*
                     }
                 }
 
@@ -83,9 +90,10 @@ macro_rules! dfut_procs {
                     }
                 }
             }
-
-            $(create_constructor!{$name ($($arg : $argtype),*)})*
         }
+
+        $(create_constructor!{$name ($($arg : $argtype),*)})*
+        $(struct_impl!{$name ($($arg : $argtype),*) $ret $body})*
 
     };
 }
@@ -95,7 +103,7 @@ dfut_procs! {
         a + b
     }
 
-    async fn wiki_ladder(path: Vec<String>, target: String) -> Vec<String> {
+    async fn wiki_ladder(_path: Vec<String>, _target: String) -> Vec<String> {
         vec!["a".to_owned()]
     }
 }
