@@ -18,23 +18,21 @@ impl ObjectStore {
     }
 
     pub fn put<F: Future<Output = Value> + Send + 'static>(&self, id: DFutId, task: F) {
-        let (tx, _) = broadcast::channel(1);
-        assert!(self
+        let tx = self
             .map
             .lock()
             .unwrap()
-            .insert(id, Entry::new(tx.clone()))
-            .is_none());
+            .entry(id)
+            .or_insert_with(Entry::new)
+            .get_tx();
         tokio::spawn(async move {
-            if let Err(_) = tx.send(task.await) {
-                panic!("Error broadcasting value");
-            }
+            let _ = tx.send(task.await);
         });
     }
 
     pub fn get(&self, data: DFutData) -> PendingValue {
         let mut map = self.map.lock().unwrap();
-        let entry = map.get_mut(&data.id).unwrap();
+        let entry = map.entry(data.id).or_insert_with(Entry::new);
         let done = entry.update_instances(&data);
         if !done {
             entry.get()
@@ -69,11 +67,18 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(tx: Sender<Value>) -> Self {
-        let rx = tx.subscribe();
+    fn new() -> Self {
+        let (tx, rx) = broadcast::channel(1);
         Self {
             value: FutureValue::Pending(tx, rx),
             instances: HashMap::from([(InstanceId::nil(), 1)]),
+        }
+    }
+
+    fn get_tx(&self) -> Sender<Value> {
+        match &self.value {
+            FutureValue::Pending(tx, _) => tx.clone(),
+            FutureValue::Ready(_) => unreachable!(),
         }
     }
 

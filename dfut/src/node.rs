@@ -5,6 +5,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
+use rand::seq::IteratorRandom;
+use rand::thread_rng;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpSocket;
 use tokio::runtime::{Builder, Runtime};
@@ -53,9 +55,11 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
     fn run(&'static self, main: Option<impl DFutTrait<CallType = C, Output = ()>>) {
         self.connections.get(&self.id).unwrap().start_local(self);
         self.rt.block_on(async {
-            let _handle = tokio::spawn(self.connect_remotes());
+            let handle = tokio::spawn(self.connect_remotes());
             if let Some(main) = main {
-                self.spawn(main).unwrap().await;
+                self.spawn(main).await;
+            } else {
+                handle.await.unwrap().unwrap();
             }
         });
     }
@@ -94,12 +98,15 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
         }
     }
 
-    fn spawn<T: DFutValue>(
-        &self,
-        call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<C, T>, &'static str> {
-        let conn = self.connections.get(&0).unwrap();
-        conn.spawn(call)
+    fn spawn<T: DFutValue>(&self, call: impl DFutTrait<CallType = C, Output = T>) -> DFut<C, T> {
+        self.connections
+            .values()
+            .choose(&mut thread_rng())
+            .unwrap()
+            .spawn(call)
+            .or_else(|call| self.connections.get(&self.id).unwrap().spawn(call))
+            .ok()
+            .unwrap()
     }
 
     pub(crate) fn run_task(&'static self, id: DFutId, call: C) {
@@ -128,5 +135,4 @@ pub fn spawn<T: DFutValue, C: DFutTrait<CallType = C, Output = Value>>(
         .downcast_ref::<Node<C>>()
         .unwrap()
         .spawn(call)
-        .unwrap()
 }

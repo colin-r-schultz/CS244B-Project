@@ -2,12 +2,12 @@ use serde::de::DeserializeOwned;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::future::Future;
-use std::io::{self};
+use std::io::{self, ErrorKind};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
@@ -45,14 +45,14 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Connection<C> {
         .map(Session::abort);
     }
 
-    pub fn spawn<T: DFutValue>(
+    pub fn spawn<T: DFutValue, A: DFutTrait<CallType = C, Output = T>>(
         &self,
-        call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<C, T>, &'static str> {
+        call: A,
+    ) -> Result<DFut<C, T>, A> {
         if let Some(sess) = &*self.session.lock().unwrap() {
             sess.spawn(call)
         } else {
-            Err("No current session")
+            Err(call)
         }
     }
 
@@ -92,7 +92,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
     }
 
     fn new_remote(node: &'static Node<C>, connected_id: NodeId, stream: TcpStream) -> Self {
-        let (sender, receiver) = mpsc::channel(10);
+        let (sender, receiver) = mpsc::unbounded_channel();
         let sender_clone = sender.clone();
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -116,19 +116,22 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
         }
     }
 
-    fn spawn<T>(
-        &self,
-        call: impl DFutTrait<CallType = C, Output = T>,
-    ) -> Result<DFut<C, T>, &'static str> {
+    fn spawn<T, A: DFutTrait<CallType = C, Output = T>>(&self, call: A) -> Result<DFut<C, T>, A> {
         let id = DFutId::new_v4();
         match &self.session_type {
             SessionType::Local => self.node.run_task(id, call.to_call_type()),
-            SessionType::Remote { call_channel, .. } => call_channel
-                .try_send(Command::Call {
-                    id,
-                    call: call.to_call_type(),
-                })
-                .unwrap(),
+            SessionType::Remote { call_channel, .. } => {
+                if call_channel.is_closed() {
+                    return Err(call);
+                } else {
+                    call_channel
+                        .send(Command::Call {
+                            id,
+                            call: call.to_call_type(),
+                        })
+                        .unwrap()
+                }
+            }
         };
         Ok(DFut::new(self.node, self.connected_id, id))
     }
@@ -146,7 +149,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
             SessionType::Remote { call_channel, .. } => {
                 let (tx, rx) = oneshot::channel();
                 call_channel
-                    .try_send(Command::Retrieve {
+                    .send(Command::Retrieve {
                         data,
                         channel: Some(tx),
                     })
@@ -177,7 +180,12 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
         Ok(())
     }
 
-    async fn send_cmd(state: &mut SessionState<C>, cmd: Command<C>) -> io::Result<()> {
+    async fn send_cmd(state: &mut SessionState<C>, mut cmd: Command<C>) -> io::Result<()> {
+        if let Command::Retrieve { data, channel } = &mut cmd {
+            state
+                .outstanding_requests
+                .insert(data.instance_id, channel.take().unwrap());
+        }
         let payload = serde_cbor::to_vec(&cmd).unwrap();
         state
             .stream
@@ -188,12 +196,15 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
 
     async fn recv_cmd(state: &mut SessionState<C>) -> io::Result<()> {
         let mut len_buf = [0; 4];
-
-        if state.stream.peek(&mut len_buf).await? == 0 {
-            return Ok(());
+        match state.stream.try_read(&mut len_buf) {
+            Ok(n) => {
+                state.stream.read_exact(&mut len_buf[n..]).await?;
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(()),
+            Err(e) => return Err(e),
         }
-        let len = state.stream.read_u32().await?;
 
+        let len = u32::from_be_bytes(len_buf);
         let mut buf = vec![0; len as usize];
 
         state.stream.read_exact(&mut buf).await?;
@@ -204,13 +215,10 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
                 let sender = state.sender.clone();
                 let node = state.node;
                 tokio::spawn(async move {
-                    let id = data.id;
+                    let id = data.instance_id;
                     let val = node.get_from_store(data).resolve().await;
                     let payload = serde_cbor::to_vec(&val).unwrap().into_boxed_slice();
-                    sender
-                        .send(Command::Completed { id, payload })
-                        .await
-                        .unwrap();
+                    sender.send(Command::Completed { id, payload }).unwrap();
                 });
             }
             Command::Completed { id, payload } => state
