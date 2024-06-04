@@ -12,9 +12,9 @@ use tokio::net::TcpSocket;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::connection::Connection;
-use crate::dfut::{DFut, DFutData, DFutTrait, DFutValue};
+use crate::dfut::{DFut, DFutCall, DFutData, DFutTrait, DFutValue};
 use crate::store::{ObjectStore, PendingValue};
-use crate::types::{DFutId, NodeId, Value};
+use crate::types::{DFutId, NodeId};
 
 pub struct Node<CallType: DFutTrait> {
     id: NodeId,
@@ -26,7 +26,7 @@ pub struct Node<CallType: DFutTrait> {
     store: ObjectStore,
 }
 
-impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
+impl<C: DFutTrait> Node<C> {
     pub fn new(id: NodeId, addr_map: HashMap<NodeId, SocketAddr>) -> io::Result<Self> {
         let connections = addr_map
             .iter()
@@ -41,7 +41,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
         })
     }
 
-    pub fn start(self, main: Option<impl DFutTrait<CallType = C, Output = ()>>) {
+    pub fn start(self, main: Option<impl DFutCall<C, Output = ()>>) {
         if let Err(_) = NODE.set(Box::new(self)) {
             panic!("Attempting to start second Node");
         }
@@ -52,7 +52,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
             .run(main);
     }
 
-    fn run(&'static self, main: Option<impl DFutTrait<CallType = C, Output = ()>>) {
+    fn run(&'static self, main: Option<impl DFutCall<C, Output = ()>>) {
         self.connections.get(&self.id).unwrap().start_local(self);
         self.rt.block_on(async {
             let handle = tokio::spawn(self.connect_remotes());
@@ -98,7 +98,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
         }
     }
 
-    fn spawn<T: DFutValue>(&self, call: impl DFutTrait<CallType = C, Output = T>) -> DFut<C, T> {
+    fn spawn<T: DFutValue>(&self, call: impl DFutCall<C, Output = T>) -> DFut<C, T> {
         self.connections
             .values()
             .choose(&mut thread_rng())
@@ -107,10 +107,6 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
             .or_else(|call| self.connections.get(&self.id).unwrap().spawn(call))
             .ok()
             .unwrap()
-    }
-
-    pub(crate) fn run_task(&'static self, id: DFutId, call: C) {
-        self.store.put(id, call.run(self))
     }
 
     pub(crate) fn get_from_store(&self, data: DFutData) -> PendingValue {
@@ -125,11 +121,15 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Node<C> {
     }
 }
 
+impl<C: DFutTrait> Node<C> {
+    pub(crate) fn run_task(&'static self, id: DFutId, call: C) {
+        self.store.put(id, call.run(self))
+    }
+}
+
 static NODE: OnceLock<Box<dyn Sync + Send + Any>> = OnceLock::new();
 
-pub fn spawn<T: DFutValue, C: DFutTrait<CallType = C, Output = Value>>(
-    call: impl DFutTrait<CallType = C, Output = T>,
-) -> DFut<C, T> {
+pub fn spawn<T: DFutValue, C: DFutTrait>(call: impl DFutCall<C, Output = T>) -> DFut<C, T> {
     NODE.get()
         .expect("Not in context")
         .downcast_ref::<Node<C>>()

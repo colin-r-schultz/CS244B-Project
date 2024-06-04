@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as 
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use crate::dfut::{DFut, DFutData, DFutTrait, DFutValue};
+use crate::dfut::{DFut, DFutCall, DFutData, DFutTrait, DFutValue};
 use crate::protocol::Command;
 use crate::types::{DFutId, InstanceId, NodeId, Value};
 use crate::Node;
@@ -21,7 +21,7 @@ pub struct Connection<C: DFutTrait> {
     session: Mutex<Option<Session<C>>>,
 }
 
-impl<C: DFutTrait<CallType = C, Output = Value>> Connection<C> {
+impl<C: DFutTrait> Connection<C> {
     pub fn new(id: NodeId) -> Self {
         Self {
             id,
@@ -45,7 +45,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Connection<C> {
         .map(Session::abort);
     }
 
-    pub fn spawn<T: DFutValue, A: DFutTrait<CallType = C, Output = T>>(
+    pub fn spawn<T: DFutValue, A: DFutCall<C, Output = T>>(
         &self,
         call: A,
     ) -> Result<DFut<C, T>, A> {
@@ -82,7 +82,7 @@ struct Session<C: DFutTrait> {
     session_type: SessionType<C>,
 }
 
-impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
+impl<C: DFutTrait> Session<C> {
     fn new_local(node: &'static Node<C>, connected_id: NodeId) -> Self {
         Self {
             node,
@@ -116,7 +116,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
         }
     }
 
-    fn spawn<T, A: DFutTrait<CallType = C, Output = T>>(&self, call: A) -> Result<DFut<C, T>, A> {
+    fn spawn<T, A: DFutCall<C, Output = T>>(&self, call: A) -> Result<DFut<C, T>, A> {
         let id = DFutId::new_v4();
         match &self.session_type {
             SessionType::Local => self.node.run_task(id, call.to_call_type()),
@@ -232,7 +232,7 @@ impl<C: DFutTrait<CallType = C, Output = Value>> Session<C> {
     }
 }
 
-struct SessionState<C: DFutTrait<CallType = C, Output = Value>> {
+struct SessionState<C: DFutTrait> {
     node: &'static Node<C>,
     stream: TcpStream,
     sender: Sender<Command<C>>,
