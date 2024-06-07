@@ -13,18 +13,21 @@ use tokio::task::JoinSet;
 
 use crate::dfut::{DFut, DFutCall, DFutData, DFutTrait, DFutValue};
 use crate::protocol::Command;
-use crate::types::{DFutId, InstanceId, NodeId, Value};
+use crate::resource::Resources;
+use crate::types::{DFutId, InstanceId, NodeId, ResourceConfig, Value};
 use crate::Node;
 
 pub struct Connection<C: DFutTrait> {
     id: NodeId,
+    resources: ResourceConfig,
     session: Mutex<Option<Session<C>>>,
 }
 
 impl<C: DFutTrait> Connection<C> {
-    pub fn new(id: NodeId) -> Self {
+    pub fn new(id: NodeId, resources: ResourceConfig) -> Self {
         Self {
             id,
+            resources,
             session: Mutex::default(),
         }
     }
@@ -34,7 +37,7 @@ impl<C: DFutTrait> Connection<C> {
             &mut *self.session.lock().unwrap(),
             Some(Session::new_local(node, self.id)),
         );
-        assert!(matches!(old, None));
+        assert!(old.is_none());
     }
 
     pub fn start_remote(&self, node: &'static Node<C>, stream: TcpStream) {
@@ -43,6 +46,11 @@ impl<C: DFutTrait> Connection<C> {
             Some(Session::new_remote(node, self.id, stream)),
         )
         .map(Session::abort);
+    }
+
+    pub fn can_execute(&self, call: &impl DFutCall<C>) -> bool {
+        self.session.lock().unwrap().is_some()
+            && C::Resources::can_execute(call.get_resource_deps(), &self.resources)
     }
 
     pub fn spawn<T: DFutValue, A: DFutCall<C, Output = T>>(

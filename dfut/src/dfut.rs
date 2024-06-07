@@ -1,3 +1,4 @@
+use crate::resource::Resources;
 use crate::types::{DFutId, InstanceId, NodeId, Value};
 use crate::Node;
 use serde::de::DeserializeOwned;
@@ -7,6 +8,7 @@ use std::cell::RefCell;
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct DFutData {
@@ -103,6 +105,7 @@ impl<C: DFutTrait, T> From<DFut<C, T>> for MaybeFut<T> {
 pub trait DFutTrait:
     DFutCall<Self, Output = Value> + Serialize + DeserializeOwned + Send + Sync + 'static
 {
+    type Resources: Resources;
 }
 
 pub trait DFutCall<C: DFutTrait>: Into<C> + Sized {
@@ -115,10 +118,12 @@ pub trait DFutCall<C: DFutTrait>: Into<C> + Sized {
     }
 
     fn get_dfut_deps(&self) -> impl Iterator<Item = (NodeId, DFutId)>;
+
+    fn get_resource_deps(&self) -> impl Iterator<Item = (&str, usize)>;
 }
 
 pub trait DFutValue: Any + erased_serde::Serialize + Send + Sync {}
-impl<T> DFutValue for T where T: Any + Serialize + Send + Sync {}
+impl<T> DFutValue for T where T: Any + Serialize + Send + Sync + 'static {}
 erased_serde::serialize_trait_object!(DFutValue);
 
 pub trait MaybeFutTrait<T>: Into<MaybeFut<T>> + Send + 'static {

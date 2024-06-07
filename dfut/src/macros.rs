@@ -1,14 +1,14 @@
 #[macro_export]
 macro_rules! create_struct {
-    ($name:ident ($($arg:ident : $argtype:ty),*) $ret:ty $body:block) => {
+    ([$($resource:ident $amt:literal $alias:ident $($_:ident)?),*] $name:ident ($($arg:ident : $argtype:ty),*) $ret:ty $body:block) => {
         #[allow(non_camel_case_types)]
         #[derive($crate::macros::support::Serialize,$crate::macros::support::Deserialize)]
         pub struct $name<$(#[allow(non_camel_case_types)] $arg = $crate::macros::support::MaybeFut<$argtype>),*>($($arg,)*);
 
-        #[allow(non_camel_case_types)]
-        impl<$($arg),*> $name<$($arg),*> {
-            fn _run($($arg : $argtype),*) -> impl std::future::Future<Output = $ret> + Send + 'static { async move { $body } }
-        }
+        // #[allow(non_camel_case_types)]
+        // impl<$($arg),*> $name<$($arg),*> {
+        //     fn _run($($arg : $argtype),*) -> impl std::future::Future<Output = $ret> + Send + 'static { async move { $body } }
+        // }
 
         #[allow(non_camel_case_types)]
         impl<$($arg: $crate::macros::support::MaybeFutTrait<$argtype>),*> Into<dfut_impl::Call> for $name<$($arg),*> {
@@ -25,7 +25,8 @@ macro_rules! create_struct {
             fn run(self, node: &'static $crate::Node<dfut_impl::Call>) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
                 let Self($($arg),*) = self;
                 async move {
-                    Self::_run($($arg.retrieve(node).await),*).await
+                    (|$($arg : $argtype),* $(,$alias)*| async move $body
+                )($($arg.retrieve(node).await),* $(,node.resources().$resource::<$amt>())*).await
                 }
             }
 
@@ -35,38 +36,52 @@ macro_rules! create_struct {
                 $(let res = res.chain($arg.get_remote_dep());)*
                 res
             }
-        }
 
-        #[allow(non_camel_case_types)]
-        impl<$($arg: $crate::macros::support::Resolve<$argtype>),*> std::future::IntoFuture for $name<$($arg),*> {
-            type Output = $ret;
-            type IntoFuture = std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Self::Output> + Send + 'static>>;
-
-            fn into_future(self) -> Self::IntoFuture {
-                let Self($($arg),*) = self;
-                std::boxed::Box::pin(
-                    async {
-                        Self::_run($($arg.resolve().await),*).await
-                    })
+            fn get_resource_deps(&self) -> impl Iterator<Item = (&str, usize)> {
+                [
+                    $((stringify!($resource), $amt)),*
+                ].into_iter()
             }
         }
+
+        // #[allow(non_camel_case_types)]
+        // impl<$($arg: $crate::macros::support::Resolve<$argtype>),*> std::future::IntoFuture for $name<$($arg),*> {
+        //     type Output = $ret;
+        //     type IntoFuture = std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Self::Output> + Send + 'static>>;
+
+        //     fn into_future(self) -> Self::IntoFuture {
+        //         let Self($($arg),*) = self;
+        //         std::boxed::Box::pin(
+        //             async {
+        //                 Self::_run($($arg.resolve().await),*).await
+        //             })
+        //     }
+        // }
+    };
+}
+
+#[macro_export]
+macro_rules! or_else {
+    ($x:tt $($_:tt)?) => {
+        $x
     };
 }
 
 #[macro_export]
 macro_rules! dfut_procs {
-    ($(async fn $name:ident ($($arg:ident : $argtype:ty),*) -> $ret:ty $body:block)*) => {
+    ($(#![resources($resources:ty)])?
+
+     $( $(#[requires( $($res:ident($amt:literal) $(as $alias:ident)?),+ )])?
+        async fn $name:ident ($($arg:ident : $argtype:ty),*) -> $ret:ty $body:block)*) => {
         #[allow(non_camel_case_types)]
         mod dfut_impl {
             use std::sync::Arc;
-            use $crate::macros::support::{DFutTrait, DFutCall, Serialize, Deserialize, Node, Value, DFutId, NodeId,};
+            use $crate::macros::support::{DFutCall, Serialize, Deserialize, Node, Value, DFutId, NodeId,};
 
             #[derive(Serialize,Deserialize)]
             pub enum Call {
                 $($name(super::$name)),*
             }
-
-            impl DFutTrait for Call{}
 
             impl DFutCall<Self> for Call {
                 type Output = Value;
@@ -83,14 +98,32 @@ macro_rules! dfut_procs {
                     };
                     vec.into_iter()
                 }
+
+                fn get_resource_deps(&self) -> impl Iterator<Item = (&str, usize)> {
+                    let vec: Vec<_> = match self {
+                        $(Self::$name(inner) => inner.get_resource_deps().collect()),*
+                    };
+                    vec.into_iter()
+                }
             }
         }
-        $($crate::create_struct!{$name ($($arg : $argtype),*) $ret $body})*
+
+        impl $crate::macros::support::DFutTrait for dfut_impl::Call{
+            type Resources = $crate::or_else!{$($resources)? ()};
+        }
+
+        $($crate::create_struct!{
+            [$($($res $amt $($alias)? $res),*)?]
+            $name ($($arg : $argtype),*) $ret $body
+        })*
 
     };
 }
 
 // dfut_procs! {
+//     #[resources(crate::resource::CpuResources)]
+
+//     #[requires(cpus(3))]
 //     async fn add(a: i32, b: i32) -> i32 {
 //         a + b
 //     }

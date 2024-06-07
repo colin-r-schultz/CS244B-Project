@@ -10,11 +10,13 @@ use rand::thread_rng;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpSocket;
 use tokio::runtime::{Builder, Runtime};
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::connection::Connection;
 use crate::dfut::{DFut, DFutCall, DFutData, DFutTrait, DFutValue};
-use crate::store::{ObjectStore, PendingValue};
-use crate::types::{DFutId, NodeId};
+use crate::resource::Resources;
+use crate::store::{PendingValue, TaskStore};
+use crate::types::{DFutId, NodeId, ResourceConfig};
 
 pub struct Node<CallType: DFutTrait> {
     id: NodeId,
@@ -23,21 +25,29 @@ pub struct Node<CallType: DFutTrait> {
     rt: Runtime,
     connections: HashMap<NodeId, Connection<CallType>>,
 
-    store: ObjectStore,
+    resources: CallType::Resources,
+    store: TaskStore,
 }
 
 impl<C: DFutTrait> Node<C> {
-    pub fn new(id: NodeId, addr_map: HashMap<NodeId, SocketAddr>) -> io::Result<Self> {
-        let connections = addr_map
-            .iter()
-            .map(|(&conn_id, _)| (conn_id, Connection::new(conn_id)))
-            .collect();
+    pub fn new(
+        id: NodeId,
+        config: HashMap<NodeId, (SocketAddr, ResourceConfig)>,
+    ) -> io::Result<Self> {
+        let resources = C::Resources::from_config(&config.get(&id).unwrap().1);
+        let mut connections = HashMap::new();
+        let mut addr_map = HashMap::new();
+        for (conn_id, (addr, resources)) in config.into_iter() {
+            connections.insert(conn_id, Connection::new(conn_id, resources));
+            addr_map.insert(conn_id, addr);
+        }
         Ok(Self {
             id,
             rt: Builder::new_current_thread().enable_all().build()?,
             addr_map,
             connections,
-            store: ObjectStore::new(),
+            store: TaskStore::new(),
+            resources,
         })
     }
 
@@ -55,29 +65,32 @@ impl<C: DFutTrait> Node<C> {
     fn run(&'static self, main: Option<impl DFutCall<C, Output = ()>>) {
         self.connections.get(&self.id).unwrap().start_local(self);
         self.rt.block_on(async {
-            let handle = tokio::spawn(self.connect_remotes());
+            let (listen_task, mut connects) = self.listen_for_remotes();
+            while let Some(_) = connects.join_next().await {}
             if let Some(main) = main {
                 self.spawn(main).await;
             } else {
-                handle.await.unwrap().unwrap();
+                listen_task.await.unwrap();
             }
         });
     }
 
-    async fn connect_remotes(&'static self) -> io::Result<()> {
-        let listen_sock = TcpSocket::new_v4()?;
-        listen_sock.set_reuseport(true)?;
+    fn listen_for_remotes(&'static self) -> (JoinHandle<()>, JoinSet<io::Result<()>>) {
+        let listen_sock = TcpSocket::new_v4().unwrap();
+        listen_sock.set_reuseport(true).unwrap();
         let myaddr = *self.addr_map.get(&self.id).unwrap();
-        listen_sock.bind(myaddr)?;
-        let listener = listen_sock.listen(self.addr_map.len() as u32)?;
+        listen_sock.bind(myaddr).unwrap();
+        let listener = listen_sock.listen(self.addr_map.len() as u32).unwrap();
+
+        let mut set = JoinSet::new();
 
         for (&id, &addr) in self.addr_map.iter() {
             if id != self.id {
-                tokio::spawn(async move {
+                set.spawn(async move {
                     let sock = TcpSocket::new_v4()?;
                     sock.set_reuseport(true)?;
                     sock.bind(myaddr)?;
-                    let stream = sock.connect(addr).await.unwrap();
+                    let stream = sock.connect(addr).await?;
                     self.connections
                         .get(&id)
                         .unwrap()
@@ -87,24 +100,32 @@ impl<C: DFutTrait> Node<C> {
             }
         }
 
-        loop {
-            let (stream, new_addr) = match listener.accept().await {
-                Ok(pair) => pair,
-                Err(_) => continue,
-            };
-            if let Some((id, _)) = self.addr_map.iter().find(|(_, &addr)| addr == new_addr) {
-                self.connections.get(id).unwrap().start_remote(self, stream);
+        let listen_task = tokio::spawn(async move {
+            loop {
+                let (stream, new_addr) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => continue,
+                };
+                if let Some((id, _)) = self.addr_map.iter().find(|(_, &addr)| addr == new_addr) {
+                    self.connections.get(id).unwrap().start_remote(self, stream);
+                }
             }
-        }
+        });
+        (listen_task, set)
+    }
+
+    pub fn resources(&self) -> &C::Resources {
+        &self.resources
     }
 
     fn spawn<T: DFutValue>(&self, call: impl DFutCall<C, Output = T>) -> DFut<C, T> {
         self.connections
-            .values()
+            .iter()
+            .filter(|(_, conn)| conn.can_execute(&call))
             .choose(&mut thread_rng())
             .unwrap()
+            .1
             .spawn(call)
-            .or_else(|call| self.connections.get(&self.id).unwrap().spawn(call))
             .ok()
             .unwrap()
     }

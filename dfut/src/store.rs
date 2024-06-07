@@ -6,11 +6,11 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 use crate::dfut::DFutData;
 use crate::types::{DFutId, InstanceId, Value};
 
-pub struct ObjectStore {
+pub struct TaskStore {
     map: Mutex<HashMap<DFutId, Entry>>,
 }
 
-impl ObjectStore {
+impl TaskStore {
     pub fn new() -> Self {
         Self {
             map: Mutex::default(),
