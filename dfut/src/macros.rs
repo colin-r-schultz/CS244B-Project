@@ -24,9 +24,10 @@ macro_rules! create_struct {
 
             fn run(self, node: &'static $crate::Node<dfut_impl::Call>) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
                 let Self($($arg),*) = self;
+                $(let $alias = node.resources().$resource::<$amt>();)*
                 async move {
-                    (|$($arg : $argtype),* $(,$alias)*| async move $body
-                )($($arg.retrieve(node).await),* $(,node.resources().$resource::<$amt>())*).await
+                    (|$($arg : $argtype,)*| async move $body
+                )($($arg.retrieve(node).await,)*).await
                 }
             }
 
@@ -69,7 +70,7 @@ macro_rules! or_else {
 
 #[macro_export]
 macro_rules! dfut_procs {
-    ($(#![resources($resources:ty)])?
+    ($(#![resources( $resources:ty )])?
 
      $( $(#[requires( $($res:ident($amt:literal) $(as $alias:ident)?),+ )])?
         async fn $name:ident ($($arg:ident : $argtype:ty),*) -> $ret:ty $body:block)*) => {

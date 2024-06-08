@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::future::{Future, IntoFuture};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub struct DFutData {

@@ -66,9 +66,22 @@ impl<C: DFutTrait> Node<C> {
         self.connections.get(&self.id).unwrap().start_local(self);
         self.rt.block_on(async {
             let (listen_task, mut connects) = self.listen_for_remotes();
-            while let Some(_) = connects.join_next().await {}
+            self.resources.initialize().await;
+            let mut connect_results = Vec::new();
+            while let Some(res) = connects.join_next().await {
+                connect_results.push(res.unwrap());
+            }
             if let Some(main) = main {
-                self.spawn(main).await;
+                // connect_results
+                //     .into_iter()
+                //     .for_each(|x| x.expect("Leader failed to connect"));
+                self.connections
+                    .get(&self.id)
+                    .unwrap()
+                    .spawn(main)
+                    .ok()
+                    .unwrap()
+                    .await
             } else {
                 listen_task.await.unwrap();
             }
